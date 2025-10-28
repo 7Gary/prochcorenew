@@ -1,0 +1,45 @@
+# train:
+    # 环境变量
+    export PYTHONPATH=src
+
+    # MVTec 数据集路径
+    datapath=/data/c425/cx/Patchcore_net/datasets/mvtec_anomaly_detection/mvtec_anomaly_detection/
+    datasets=('bottle'  'cable'  'capsule'  'carpet'  'grid'  'hazelnut' 'leather'  'metal_nut'  'pill' 'screw' 'tile' 'toothbrush' 'transistor' 'wood' 'zipper' 'bupi' 'user3')
+    dataset_flags=($(for dataset in "${datasets[@]}"; do echo '-d '"${dataset}"; done))
+
+
+python bin/run_patchcore_user.py \
+--gpu 0 \
+--seed 0 \
+--save_patchcore_model \
+--save_segmentation_images \
+--log_group IM320_WR50_L2-3_P001_D1024-1024_PS-3_AN-1_S22 \
+--log_project MVTecAD_Results results \
+patch_core \
+-b wideresnet50 \
+-le layer2 \
+-le layer3 \
+--pretrain_embed_dimension 1024 \
+--target_embed_dimension 768 \
+--anomaly_scorer_num_nn 1 \
+--patchsize 3 \
+--enable_yvmm \
+--yvmm_depth 5 \
+--yvmm_hidden_channels 96 \
+--yvmm_fusion_hidden 128 \
+--yvmm_stability_eps 1e-6 \
+--yvmm_encoded_scale 0.8 \
+--yvmm_fold_scale 0.2 \
+--yvmm_residual_mix 0.7 \
+--coreset_ratio 0.1 \
+--adapter_depth 2 \
+--contrast_temp 0.07 \
+sampler \
+-p 0.1 \
+approx_greedy_coreset \
+dataset \
+-d user3 \
+--resize 256 \
+--imagesize 256 \
+--augment \
+custom $datapath
