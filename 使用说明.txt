@@ -20,22 +20,15 @@ patch_core \
 -le layer2 \
 -le layer3 \
 --pretrain_embed_dimension 1024 \
---target_embed_dimension 768 \
+--target_embed_dimension 1024 \
 --anomaly_scorer_num_nn 1 \
 --patchsize 3 \
---enable_yvmm \
---yvmm_depth 5 \
---yvmm_hidden_channels 96 \
---yvmm_fusion_hidden 128 \
---yvmm_stability_eps 1e-6 \
---yvmm_encoded_scale 0.8 \
---yvmm_fold_scale 0.2 \
---yvmm_residual_mix 0.7 \
---coreset_ratio 0.1 \
+--enable_faf \
+--fractal_order 3 \
 --adapter_depth 2 \
 --contrast_temp 0.07 \
 sampler \
--p 0.1 \
+--coreset_ratio 0.1 \
 approx_greedy_coreset \
 dataset \
 -d user3 \
