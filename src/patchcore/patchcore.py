@@ -15,7 +15,7 @@ import torch.utils.data
 import patchcore.backbones
 import patchcore.common
 import patchcore.sampler
-import patchcore.yvmm
+import patchcore.faf
 from patchcore.networks.contrastive import (
     ContrastiveMemoryAugmentation,
     DomainInvariantContrastiveAdapter,
@@ -47,7 +47,7 @@ class PatchCore(torch.nn.Module):
         self._dica_mmd_trace: List[float] = []
         self.memory_module: Optional[ContrastiveMemoryAugmentation] = None
         self.dica: Optional[DomainInvariantContrastiveAdapter] = None
-        self.yvmm_module = None
+        self.faf_module = None
 
     def load(
         self,
@@ -59,7 +59,7 @@ class PatchCore(torch.nn.Module):
         target_embed_dimension: int,
         patchsize: int = 3,
         patchstride: int = 1,
-        anomaly_score_num_nn: int = 1,
+        anomaly_scorer_num_nn: int = 1,
         featuresampler: patchcore.sampler.Sampler = patchcore.sampler.IdentitySampler(),
         nn_method: patchcore.common.FaissNN = patchcore.common.FaissNN(False, 4),
         **kwargs,
@@ -101,7 +101,7 @@ class PatchCore(torch.nn.Module):
         self.forward_modules["dica"] = self.dica
 
         self._nn_method = nn_method
-        self._anomaly_scorer_config = {"n_nearest_neighbours": anomaly_score_num_nn}
+        self._anomaly_scorer_config = {"n_nearest_neighbours": anomaly_scorer_num_nn}
         self.anomaly_scorer = patchcore.common.NearestNeighbourScorer(
             n_nearest_neighbours=self._anomaly_scorer_config["n_nearest_neighbours"],
             nn_method=self._nn_method,
@@ -121,18 +121,20 @@ class PatchCore(torch.nn.Module):
         self.training_statistics = {}
         self._dica_mmd_trace = []
 
-        yvmm_config = kwargs.pop("yvmm_config", None)
-        if yvmm_config is not None:
-            if isinstance(yvmm_config, dict):
-                config = patchcore.yvmm.YarnVoxelConfig(**yvmm_config)
-            elif isinstance(yvmm_config, patchcore.yvmm.YarnVoxelConfig):
-                config = yvmm_config
+        fractal_config = kwargs.pop("fractal_config", None)
+        if fractal_config is not None:
+            if isinstance(fractal_config, dict):
+                config = patchcore.faf.FractalAttentionConfig(**fractal_config)
+            elif isinstance(fractal_config, patchcore.faf.FractalAttentionConfig):
+                config = fractal_config
             else:
-                raise TypeError("yvmm_config must be a dict or YarnVoxelConfig instance")
-            self.yvmm_module = patchcore.yvmm.YarnVoxelManifoldMapping(
+                raise TypeError(
+                    "fractal_config must be a dict or FractalAttentionConfig instance"
+                )
+            self.faf_module = patchcore.faf.FractalAttentionFusion(
                 self.target_embed_dimension, config
             ).to(self.device)
-            self.forward_modules["yvmm_module"] = self.yvmm_module
+            self.forward_modules["faf_module"] = self.faf_module
 
     def embed(self, data):
         if isinstance(data, torch.utils.data.DataLoader):
@@ -196,9 +198,9 @@ class PatchCore(torch.nn.Module):
         features = self.forward_modules["preprocessing"](features)
         features = self.forward_modules["preadapt_aggregator"](features)
 
-        if self.yvmm_module is not None:
+        if self.faf_module is not None:
             batchsize = images.shape[0]
-            features = self.yvmm_module(features, patch_shapes[0], batchsize)
+            features = self.faf_module(features, patch_shapes[0], batchsize)
 
         adapted_features, mmd_value = self.dica(features)
         if mmd_value is not None:
@@ -212,17 +214,17 @@ class PatchCore(torch.nn.Module):
         """Compute embeddings of the training data and fill the memory bank."""
 
         self._fill_memory_bank(training_data)
-        if self.yvmm_module is not None and hasattr(self.yvmm_module, "last_residual_norm"):
+        if self.faf_module is not None and hasattr(self.faf_module, "last_fractal_mean"):
             try:
-                residual = float(self.yvmm_module.last_residual_norm.item())
-                fold_energy = float(self.yvmm_module.last_fold_energy.item())
+                fractal_mean = float(self.faf_module.last_fractal_mean.item())
+                fractal_coherence = float(self.faf_module.last_fractal_coherence.item())
                 LOGGER.info(
-                    "YVMM 诊断: 残差范数 %.4f, 折叠能量 %.4f. 可通过调整 --yvmm_residual_mix / --yvmm_fold_scale 优化。",
-                    residual,
-                    fold_energy,
+                    "FAF 诊断: 平均分形强度 %.4f, 注意力一致性 %.4f. 可通过调整 --fractal_order 优化。",
+                    fractal_mean,
+                    fractal_coherence,
                 )
             except (RuntimeError, AttributeError):
-                LOGGER.debug("Failed to read YVMM diagnostics after training.")
+                LOGGER.debug("Failed to read FAF diagnostics after training.")
 
     def _fill_memory_bank(self, input_data: torch.utils.data.DataLoader) -> None:
         """Compute and set the support features for the contrastive memory."""
