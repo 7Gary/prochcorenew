@@ -472,58 +472,16 @@ def run(
 @click.option("--adapter_depth", type=int, default=2, show_default=True)
 @click.option("--contrast_temp", type=float, default=0.07, show_default=True)
 @click.option(
-    "--enable_yvmm",
+    "--enable_faf",
     is_flag=True,
-    help="Enable yarn voxel manifold mapping augmentation for textile scenarios.",
+    help="Enable Fractal Attention Fusion for self-similarity aware patch mixing.",
 )
 @click.option(
-    "--yvmm_depth",
+    "--fractal_order",
     type=int,
-    default=4,
+    default=3,
     show_default=True,
-    help="Depth of the yarn voxel volume (>=2).",
-)
-@click.option(
-    "--yvmm_hidden_channels",
-    type=int,
-    default=64,
-    show_default=True,
-    help="Hidden channels for the voxel manifold encoder.",
-)
-@click.option(
-    "--yvmm_fusion_hidden",
-    type=int,
-    default=128,
-    show_default=True,
-    help="Hidden dimension of the fusion MLP that mixes manifold cues.",
-)
-@click.option(
-    "--yvmm_stability_eps",
-    type=float,
-    default=1e-6,
-    show_default=True,
-    help="Stability epsilon used when computing fold energy.",
-)
-@click.option(
-    "--yvmm_encoded_scale",
-    type=float,
-    default=1.0,
-    show_default=True,
-    help="Scale factor applied to manifold encoded features before fusion.",
-)
-@click.option(
-    "--yvmm_fold_scale",
-    type=float,
-    default=1.0,
-    show_default=True,
-    help="Scale factor applied to fold energy responses before fusion.",
-)
-@click.option(
-    "--yvmm_residual_mix",
-    type=float,
-    default=1.0,
-    show_default=True,
-    help="Residual mixing weight; <1 降低影响, >1 放大纱线体素增益.",
+    help="Number of fractal refinement levels used to build the attention bias.",
 )
 def patch_core(
     backbone_names,
@@ -541,14 +499,8 @@ def patch_core(
     faiss_num_workers,
     adapter_depth,
     contrast_temp,
-    enable_yvmm,
-    yvmm_depth,
-    yvmm_hidden_channels,
-    yvmm_fusion_hidden,
-    yvmm_stability_eps,
-    yvmm_encoded_scale,
-    yvmm_fold_scale,
-    yvmm_residual_mix,
+    enable_faf,
+    fractal_order
 ):
     backbone_names = list(backbone_names)
     if len(backbone_names) > 1:
@@ -576,17 +528,9 @@ def patch_core(
             nn_method = patchcore.common.FaissNN(faiss_on_gpu, faiss_num_workers)
 
             patchcore_instance = patchcore.patchcore.PatchCore(device)
-            yvmm_config = None
-            if enable_yvmm:
-                yvmm_config = {
-                    "depth": yvmm_depth,
-                    "hidden_channels": yvmm_hidden_channels,
-                    "fusion_hidden": yvmm_fusion_hidden,
-                    "stability_eps": yvmm_stability_eps,
-                    "encoded_scale": yvmm_encoded_scale,
-                    "fold_scale": yvmm_fold_scale,
-                    "residual_mix": yvmm_residual_mix,
-                }
+            fractal_config = None
+            if enable_faf:
+                fractal_config = {"fractal_order": fractal_order}
             patchcore_instance.load(
                 backbone=backbone,
                 layers_to_extract_from=layers_to_extract_from,
@@ -600,7 +544,7 @@ def patch_core(
                 nn_method=nn_method,
                 adapter_depth=adapter_depth,
                 contrast_temperature=contrast_temp,
-                yvmm_config=yvmm_config,
+                fractal_config=fractal_config,
             )
             loaded_patchcores.append(patchcore_instance)
         return loaded_patchcores
