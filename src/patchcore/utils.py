@@ -185,6 +185,262 @@ def plot_segmentation_images(
 
     return saved_paths
 
+def plot_faf_enhancement_images(
+    savefolder,
+    image_paths,
+    faf_maps,
+    image_transform=lambda x: x,
+    heatmap_cmap="magma",
+    heatmap_alpha=0.55,
+    file_suffix="_faf",
+    file_extension="png",
+    dpi=200,
+):
+    """Visualize fractal attention fusion enhancement maps over images."""
+
+    os.makedirs(savefolder, exist_ok=True)
+
+    def _normalize_map(faf_map):
+        faf_map = np.asarray(faf_map).astype(np.float32)
+        faf_map = np.nan_to_num(faf_map, nan=0.0, posinf=0.0, neginf=0.0)
+        faf_map -= faf_map.min()
+        max_value = faf_map.max()
+        if max_value > 0:
+            faf_map /= max_value
+        return np.clip(faf_map, 0.0, 1.0)
+
+    saved_paths = []
+
+    for image_path, faf_map in tqdm.tqdm(
+        zip(image_paths, faf_maps),
+        total=len(image_paths),
+        desc="Rendering FAF Enhancements...",
+        leave=False,
+    ):
+        if faf_map is None:
+            continue
+        image = PIL.Image.open(image_path).convert("RGB")
+        image = image_transform(image)
+        if not isinstance(image, np.ndarray):
+            image = image.numpy()
+        faf_map = _normalize_map(faf_map)
+
+        image_rgb = image.transpose(1, 2, 0).astype(np.float32)
+        if image_rgb.shape[2] == 1:
+            image_rgb = np.repeat(image_rgb, 3, axis=2)
+        if image_rgb.max() > 1.0:
+            image_rgb = image_rgb / 255.0
+
+        map_height, map_width = faf_map.shape[:2]
+        img_height, img_width = image_rgb.shape[:2]
+        if (map_height, map_width) != (img_height, img_width):
+            faf_image = PIL.Image.fromarray((faf_map * 255.0).astype(np.uint8)).resize(
+                (img_width, img_height), resample=PIL.Image.BILINEAR
+            )
+            faf_map = np.asarray(faf_image, dtype=np.float32) / 255.0
+
+        colormap = plt.get_cmap(heatmap_cmap)
+        heatmap_rgba = colormap(faf_map)
+        heatmap_rgb = heatmap_rgba[..., :3]
+
+        overlay = (1.0 - heatmap_alpha) * image_rgb + heatmap_alpha * heatmap_rgb
+        overlay = np.clip(overlay, 0.0, 1.0)
+
+        savename = image_path.split("/")
+        savename = "_".join(filter(None, savename[-4:]))
+        savename = os.path.join(savefolder, savename)
+        base_name, _ = os.path.splitext(savename)
+        savename = base_name + (file_suffix or "")
+        if file_extension:
+            if not file_extension.startswith("."):
+                file_extension = "." + file_extension
+            savename = savename + file_extension
+        else:
+            savename = savename + ".png"
+
+        fig, axes = plt.subplots(1, 3)
+        if not isinstance(axes, (list, np.ndarray)):
+            axes = [axes]
+        else:
+            axes = np.atleast_1d(axes)
+
+        axes[0].imshow(image_rgb)
+        axes[0].set_title("原始图像")
+        axes[1].imshow(faf_map, cmap=heatmap_cmap)
+        axes[1].set_title("FAF 热力图")
+        axes[2].imshow(overlay)
+        axes[2].set_title("增强叠加")
+
+        for axis in axes:
+            axis.axis("off")
+
+        fig.set_size_inches(10, 3.5)
+        fig.tight_layout()
+        fig.savefig(savename, dpi=dpi)
+        plt.close(fig)
+
+        saved_paths.append(savename)
+
+    return saved_paths
+
+
+def plot_dica_alignment_images(
+    savefolder,
+    image_paths,
+    dica_maps,
+    image_transform=lambda x: x,
+    heatmap_cmap="plasma",
+    heatmap_alpha=0.6,
+    file_suffix="_faf_dica",
+    file_extension="png",
+    dpi=200,
+    faf_maps=None,
+    faf_cmap="magma",
+    faf_alpha=None,
+):
+    """Render alignment intensity maps after FAF+DICA adaptation.
+
+    Args:
+        savefolder: Target directory for rendered figures.
+        image_paths: Iterable of image file paths corresponding to heatmaps.
+        dica_maps: Iterable of FAF+DICA alignment intensity maps.
+        image_transform: Callable converting a PIL image into a NumPy array
+            shaped as ``(C, H, W)`` in ``[0, 1]`` for rendering.
+        heatmap_cmap: Matplotlib colormap name for the DICA heatmap.
+        heatmap_alpha: Alpha used when blending the DICA map with the image.
+        file_suffix: Optional suffix appended to each filename.
+        file_extension: File extension (without leading ``.``) for outputs.
+        dpi: Resolution for the saved figures.
+        faf_maps: Optional iterable of FAF enhancement maps used to provide
+            context for the DICA visualization. When supplied the plots will
+            include an additional column showing the FAF overlay result.
+        faf_cmap: Colormap used for the FAF overlay visualization.
+        faf_alpha: Alpha coefficient for blending FAF maps. Defaults to the
+            DICA ``heatmap_alpha`` when omitted.
+    """
+
+    os.makedirs(savefolder, exist_ok=True)
+
+    def _normalize_map(dica_map):
+        dica_map = np.asarray(dica_map).astype(np.float32)
+        dica_map = np.nan_to_num(dica_map, nan=0.0, posinf=0.0, neginf=0.0)
+        dica_map -= dica_map.min()
+        max_value = dica_map.max()
+        if max_value > 0:
+            dica_map /= max_value
+        return np.clip(dica_map, 0.0, 1.0)
+
+    saved_paths = []
+
+    if faf_alpha is None:
+        faf_alpha = heatmap_alpha
+
+    total_items = min(len(image_paths), len(dica_maps))
+    if faf_maps is not None:
+        total_items = min(total_items, len(faf_maps))
+        iterable = zip(image_paths, dica_maps, faf_maps)
+    else:
+        iterable = ((path, mapa, None) for path, mapa in zip(image_paths, dica_maps))
+
+    for image_path, dica_map, faf_map in tqdm.tqdm(
+        iterable,
+        total=total_items,
+        desc="Rendering FAF+DICA Alignments...",
+        leave=False,
+    ):
+        if dica_map is None:
+            continue
+        image = PIL.Image.open(image_path).convert("RGB")
+        image = image_transform(image)
+        if not isinstance(image, np.ndarray):
+            image = image.numpy()
+        dica_map = _normalize_map(dica_map)
+        if faf_map is not None:
+            faf_map = _normalize_map(faf_map)
+
+        image_rgb = image.transpose(1, 2, 0).astype(np.float32)
+        if image_rgb.shape[2] == 1:
+            image_rgb = np.repeat(image_rgb, 3, axis=2)
+        if image_rgb.max() > 1.0:
+            image_rgb = image_rgb / 255.0
+
+        map_height, map_width = dica_map.shape[:2]
+        img_height, img_width = image_rgb.shape[:2]
+        if (map_height, map_width) != (img_height, img_width):
+            dica_image = PIL.Image.fromarray((dica_map * 255.0).astype(np.uint8)).resize(
+                (img_width, img_height), resample=PIL.Image.BILINEAR
+            )
+            dica_map = np.asarray(dica_image, dtype=np.float32) / 255.0
+        faf_overlay = None
+        if faf_map is not None:
+            if faf_map.shape[:2] != (img_height, img_width):
+                faf_image = PIL.Image.fromarray((faf_map * 255.0).astype(np.uint8)).resize(
+                    (img_width, img_height), resample=PIL.Image.BILINEAR
+                )
+                faf_map = np.asarray(faf_image, dtype=np.float32) / 255.0
+
+        colormap = plt.get_cmap(heatmap_cmap)
+        heatmap_rgba = colormap(dica_map)
+        heatmap_rgb = heatmap_rgba[..., :3]
+
+        overlay = (1.0 - heatmap_alpha) * image_rgb + heatmap_alpha * heatmap_rgb
+        overlay = np.clip(overlay, 0.0, 1.0)
+
+        if faf_map is not None:
+            faf_colormap = plt.get_cmap(faf_cmap)
+            faf_heatmap_rgba = faf_colormap(faf_map)
+            faf_heatmap_rgb = faf_heatmap_rgba[..., :3]
+            faf_overlay = (1.0 - faf_alpha) * image_rgb + faf_alpha * faf_heatmap_rgb
+            faf_overlay = np.clip(faf_overlay, 0.0, 1.0)
+
+        savename = image_path.split("/")
+        savename = "_".join(filter(None, savename[-4:]))
+        savename = os.path.join(savefolder, savename)
+        base_name, _ = os.path.splitext(savename)
+        savename = base_name + (file_suffix or "")
+        if file_extension:
+            if not file_extension.startswith("."):
+                file_extension = "." + file_extension
+            savename = savename + file_extension
+        else:
+            savename = savename + ".png"
+
+        num_cols = 3 + int(faf_overlay is not None)
+        fig, axes = plt.subplots(1, num_cols)
+        if not isinstance(axes, (list, np.ndarray)):
+            axes = [axes]
+        else:
+            axes = np.atleast_1d(axes)
+
+        column_index = 0
+        axes[column_index].imshow(image_rgb)
+        axes[column_index].set_title("原始图像")
+        column_index += 1
+
+        if faf_overlay is not None:
+            axes[column_index].imshow(faf_overlay)
+            axes[column_index].set_title("FAF 增强")
+            column_index += 1
+
+        axes[column_index].imshow(dica_map, cmap=heatmap_cmap)
+        axes[column_index].set_title("FAF+DICA 热力图")
+        column_index += 1
+
+        axes[column_index].imshow(overlay)
+        axes[column_index].set_title("域对齐叠加")
+
+        for axis in axes:
+            axis.axis("off")
+
+        fig.set_size_inches(3.5 * num_cols, 3.5)
+        fig.tight_layout()
+        fig.savefig(savename, dpi=dpi)
+        plt.close(fig)
+
+        saved_paths.append(savename)
+
+    return saved_paths
+
 
 def create_storage_folder(
     main_folder_path, project_folder, group_folder, mode="iterate"
