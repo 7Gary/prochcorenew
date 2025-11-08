@@ -111,6 +111,10 @@ class FractalAttentionFusion(torch.nn.Module):
         self.register_buffer("last_fractal_mean", torch.tensor(0.0), persistent=False)
         self.register_buffer("last_fractal_coherence", torch.tensor(0.0), persistent=False)
 
+        self.last_fractal_map: torch.Tensor | None = None
+        self.last_normalized_map: torch.Tensor | None = None
+        self.last_patch_shape: Tuple[int, int] | None = None
+
     def forward(
         self,
         flat_features: torch.Tensor,
@@ -164,4 +168,17 @@ class FractalAttentionFusion(torch.nn.Module):
             self.last_fractal_mean.copy_(fractal_scores.mean().detach())
             self.last_fractal_coherence.copy_(coherence_score.mean().detach())
 
+            self.last_patch_shape = patch_shape
+            self.last_fractal_map = fractal_scores.detach().cpu().view(batchsize, *patch_shape)
+            self.last_normalized_map = (
+                normalized_scores.detach().cpu().view(batchsize, *patch_shape)
+            )
+
         return output.view_as(flat_features)
+
+    def get_last_fractal_map(self, normalized: bool = True) -> torch.Tensor | None:
+        """Return the most recent fractal attention map."""
+
+        if normalized:
+            return None if self.last_normalized_map is None else self.last_normalized_map.clone()
+        return None if self.last_fractal_map is None else self.last_fractal_map.clone()
