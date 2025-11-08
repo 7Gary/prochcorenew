@@ -198,16 +198,40 @@ class PatchCore(torch.nn.Module):
         features = self.forward_modules["preprocessing"](features)
         features = self.forward_modules["preadapt_aggregator"](features)
 
+        batchsize = images.shape[0]
         if self.faf_module is not None:
-            batchsize = images.shape[0]
             features = self.faf_module(features, patch_shapes[0], batchsize)
 
+        dica_input = features
         adapted_features, mmd_value = self.dica(features)
         if mmd_value is not None:
             self._dica_mmd_trace.append(mmd_value)
 
         if provide_patch_shapes:
-            return _detach(adapted_features), patch_shapes
+            fractal_map = None
+            if self.faf_module is not None and hasattr(
+                self.faf_module, "get_last_fractal_map"
+            ):
+                map_tensor = self.faf_module.get_last_fractal_map(normalized=True)
+                if map_tensor is not None:
+                    fractal_map = map_tensor.cpu().numpy()
+            dica_map = None
+            try:
+                shift = (adapted_features - dica_input).detach()
+                if shift.numel() > 0:
+                    shift_norm = torch.norm(shift, dim=-1)
+                    dica_map = shift_norm.view(batchsize, *patch_shapes[0]).cpu().numpy()
+            except RuntimeError:
+                LOGGER.debug(
+                    "Failed to compute DICA shift map for visualization; falling back to zeros.",
+                    exc_info=True,
+                )
+                shift = None
+
+            if dica_map is None:
+                dica_map = np.zeros((batchsize, *patch_shapes[0]), dtype=np.float32)
+
+            return _detach(adapted_features), patch_shapes, fractal_map, dica_map
         return _detach(adapted_features)
 
     def fit(self, training_data: torch.utils.data.DataLoader) -> None:
@@ -300,6 +324,8 @@ class PatchCore(torch.nn.Module):
 
         scores = []
         masks = []
+        faf_visuals = []
+        dica_visuals = []
         labels_gt = []
         masks_gt = []
         image_names = []
@@ -317,10 +343,14 @@ class PatchCore(torch.nn.Module):
                 else:
                     images = batch
 
-                _scores, _masks = self._predict(images)
+                _scores, _masks, _faf_maps, _dica_maps = self._predict(images)
                 for score, mask in zip(_scores, _masks):
                     scores.append(score)
                     masks.append(mask)
+                if _faf_maps is not None:
+                    faf_visuals.extend(_faf_maps)
+                if _dica_maps is not None:
+                    dica_visuals.extend(_dica_maps)
                 batchsize = len(_scores)
 
                 def _extend_metadata(container, values):
@@ -334,7 +364,19 @@ class PatchCore(torch.nn.Module):
                 _extend_metadata(image_names, batch_names)
                 _extend_metadata(image_paths, batch_paths)
 
-        return scores, masks, labels_gt, masks_gt, image_names, image_paths
+        faf_output = faf_visuals if faf_visuals else None
+        dica_output = dica_visuals if dica_visuals else None
+
+        return (
+            scores,
+            masks,
+            labels_gt,
+            masks_gt,
+            image_names,
+            image_paths,
+            faf_output,
+            dica_output,
+        )
 
     def _predict(self, images):
         images = images.to(torch.float).to(self.device)
@@ -342,7 +384,9 @@ class PatchCore(torch.nn.Module):
 
         batchsize = images.shape[0]
         with torch.no_grad():
-            features, patch_shapes = self._embed(images, provide_patch_shapes=True)
+            features, patch_shapes, fractal_map, dica_map = self._embed(
+                images, provide_patch_shapes=True
+            )
             features = np.asarray(features)
 
             patch_scores, _ = self._compute_contrastive_scores(features)
@@ -360,7 +404,50 @@ class PatchCore(torch.nn.Module):
 
             masks = self.anomaly_segmentor.convert_to_segmentation(patch_scores)
 
-        return [score for score in image_scores], [mask for mask in masks]
+            faf_segmentations = None
+            if fractal_map is not None:
+                faf_array = np.asarray(fractal_map, dtype=np.float32)
+                faf_array = np.nan_to_num(faf_array, nan=0.0, posinf=0.0, neginf=0.0)
+                faf_array = faf_array.reshape(batchsize, *patch_shapes[0])
+
+                faf_array -= faf_array.min(axis=(-2, -1), keepdims=True)
+                denom = faf_array.max(axis=(-2, -1), keepdims=True)
+                denom = np.where(denom <= 0.0, 1.0, denom)
+                faf_array = faf_array / denom
+
+                faf_segmentations = self.anomaly_segmentor.convert_to_segmentation(
+                    faf_array
+                )
+
+            dica_segmentations = None
+            if dica_map is not None:
+                dica_array = np.asarray(dica_map, dtype=np.float32)
+                dica_array = np.nan_to_num(dica_array, nan=0.0, posinf=0.0, neginf=0.0)
+                dica_array = dica_array.reshape(batchsize, *patch_shapes[0])
+
+                dica_array -= dica_array.min(axis=(-2, -1), keepdims=True)
+                denom = dica_array.max(axis=(-2, -1), keepdims=True)
+                denom = np.where(denom <= 0.0, 1.0, denom)
+                dica_array = dica_array / denom
+
+                dica_segmentations = self.anomaly_segmentor.convert_to_segmentation(
+                    dica_array
+                )
+
+        faf_output = None
+        if faf_segmentations is not None:
+            faf_output = [faf for faf in faf_segmentations]
+
+        dica_output = None
+        if dica_segmentations is not None:
+            dica_output = [dica for dica in dica_segmentations]
+
+        return (
+            [score for score in image_scores],
+            [mask for mask in masks],
+            faf_output,
+            dica_output,
+        )
 
     def _compute_contrastive_scores(self, features: np.ndarray):
         patch_scores, distances, _ = self.anomaly_scorer.predict([features])
